@@ -136,6 +136,7 @@ GANTRY_ARGS=(
   --weka "${WEKA_BUCKET}:/weka/${WEKA_MOUNT}"
   --cluster "ai2/saturn"
   --cluster "ai2/jupiter"
+  --cluster "ai2/neptune"
   --env "USER_NAME=${USER_NAME}"
   --env "DATASET_ROOT=${DATASET_ROOT}"
   --env "NUM_GPUS=${NUM_GPUS}"
