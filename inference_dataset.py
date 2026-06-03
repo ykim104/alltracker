@@ -551,17 +551,44 @@ def _load_weights(model: torch.nn.Module, ckpt_init: str, tiny: bool, device: st
     model.eval()
 
 
+def _episode_scan_roots(dataset_root: Path) -> list[Path]:
+    """LeRobot datasets store MP4s under ``videos/``; avoid scanning ``data/`` parquet trees."""
+    videos = dataset_root / "videos"
+    if videos.is_dir():
+        return [videos]
+    return [dataset_root]
+
+
 def _iter_episode_mp4s(dataset_root: Path) -> list[tuple[Path, Path]]:
     """Return sorted (input_mp4, output_mp4) paths (global order is stable for sharding)."""
     out: list[tuple[Path, Path]] = []
-    for in_leaf, out_leaf in DIR_PAIRS:
-        for in_dir in dataset_root.rglob(in_leaf):
-            if not in_dir.is_dir() or in_dir.name != in_leaf:
-                continue
-            out_dir = in_dir.parent / out_leaf
-            for mp4 in sorted(in_dir.glob("*.mp4")):
-                out.append((mp4, out_dir / mp4.name))
+    scan_roots = _episode_scan_roots(dataset_root)
+    print(
+        "Scanning dataset under %s (%d root(s): %s)..."
+        % (dataset_root, len(scan_roots), ", ".join(str(r.relative_to(dataset_root)) for r in scan_roots))
+    )
+    sys.stdout.flush()
+    for scan_root in scan_roots:
+        for in_leaf, out_leaf in DIR_PAIRS:
+            n_before = len(out)
+            # Fast path: LeRobot ``videos/chunk-*/<camera>/*.mp4``
+            found = False
+            for mp4 in scan_root.glob("chunk-*/%s/*.mp4" % in_leaf):
+                found = True
+                out.append((mp4, mp4.parent.parent / out_leaf / mp4.name))
+            if not found:
+                # LIBERO / legacy layouts: only walk under scan_root (not whole dataset_root).
+                for in_dir in scan_root.glob("**/%s" % in_leaf):
+                    if not in_dir.is_dir() or in_dir.name != in_leaf:
+                        continue
+                    out_dir = in_dir.parent / out_leaf
+                    for mp4 in sorted(in_dir.glob("*.mp4")):
+                        out.append((mp4, out_dir / mp4.name))
+            print("  %s: %d episode(s) (total %d)" % (in_leaf, len(out) - n_before, len(out)))
+            sys.stdout.flush()
     out.sort(key=lambda sd: str(sd[0].resolve()))
+    print("Found %d episode(s) total." % len(out))
+    sys.stdout.flush()
     return out
 
 
@@ -577,7 +604,30 @@ def _select_pairs(
         pairs = pairs[shard_id::num_shards]
     if skip_existing:
         before = len(pairs)
-        pairs = [(s, d) for (s, d) in pairs if not _output_is_complete(d)]
+        print("Checking %d output(s) for skip-existing (stat + ffprobe when present)..." % before)
+        sys.stdout.flush()
+
+        def _needs_work(sd: tuple[Path, Path]) -> bool:
+            return not _output_is_complete(sd[1])
+
+        if before > 200:
+            workers = min(32, max(4, (os.cpu_count() or 8)))
+            kept = []
+            with ThreadPoolExecutor(max_workers=workers) as pex:
+                flags = list(pex.map(_needs_work, pairs, chunksize=64))
+            for sd, need in zip(pairs, flags):
+                if need:
+                    kept.append(sd)
+            pairs = kept
+        else:
+            kept = []
+            for i, sd in enumerate(pairs):
+                if _needs_work(sd):
+                    kept.append(sd)
+                if (i + 1) % 100 == 0 or (i + 1) == before:
+                    print("  skip-existing progress: %d/%d checked, %d remain" % (i + 1, before, len(kept)))
+                    sys.stdout.flush()
+            pairs = kept
         print("skip-existing: %d/%d remain on this shard." % (len(pairs), before))
     if limit:
         pairs = pairs[:limit]
@@ -699,6 +749,8 @@ def run(args: argparse.Namespace) -> None:
     else:
         model = Net(args.window_len)
     _load_weights(model, args.ckpt_init, args.tiny, device)
+    print("Model ready; building episode list...")
+    sys.stdout.flush()
 
     if args.num_shards > 1:
         print("Shard %d/%d" % (args.shard_id, args.num_shards))
