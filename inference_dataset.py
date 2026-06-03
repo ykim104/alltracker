@@ -68,10 +68,21 @@ DIR_PAIRS = (
 )
 
 
+def _ffprobe_bin() -> str | None:
+    return shutil.which("ffprobe")
+
+
+def _ffmpeg_bin() -> str | None:
+    return shutil.which("ffmpeg")
+
+
 def _ffprobe_size_fps(path: Path) -> tuple[int, int, float]:
+    ffprobe = _ffprobe_bin()
+    if not ffprobe:
+        raise RuntimeError("ffprobe not found on PATH")
     out = subprocess.run(
         [
-            "ffprobe",
+            ffprobe,
             "-v",
             "error",
             "-select_streams",
@@ -101,9 +112,12 @@ def _ffprobe_size_fps(path: Path) -> tuple[int, int, float]:
 
 def _read_mp4_rgb_frames_ffmpeg(path: Path, max_frames: int) -> tuple[list[np.ndarray], int]:
     """Decode full clip to RGB uint8 HWC via ffmpeg (software decode; works for AV1)."""
+    ffmpeg = _ffmpeg_bin()
+    if not ffmpeg:
+        raise RuntimeError("ffmpeg not found on PATH")
     w, h, fps = _ffprobe_size_fps(path)
     cmd = [
-        "ffmpeg",
+        ffmpeg,
         "-v",
         "error",
         "-hwaccel",
@@ -350,11 +364,34 @@ def _decode_pairs(
         ex.shutdown(wait=True)
 
 
+def _output_is_complete_pyav(out_path: Path) -> bool:
+    try:
+        import av
+    except ImportError:
+        return False
+    try:
+        with av.open(str(out_path)) as container:
+            streams = [s for s in container.streams if s.type == "video"]
+            if not streams:
+                return False
+            s = streams[0]
+            if int(s.width or 0) <= 0 or int(s.height or 0) <= 0:
+                return False
+            if container.duration is not None:
+                return float(container.duration) / float(av.time_base) > 0.01
+            return s.frames > 0 if s.frames else True
+    except Exception:
+        return False
+
+
 def _probe_native_meta(path: Path) -> tuple[int, int, int]:
     """Return (width, height, approx_frame_count) for grouping/sorting. Best-effort; 0s on failure."""
+    ffprobe = _ffprobe_bin()
+    if not ffprobe:
+        return 0, 0, 0
     out = subprocess.run(
         [
-            "ffprobe", "-v", "error", "-select_streams", "v:0",
+            ffprobe, "-v", "error", "-select_streams", "v:0",
             "-show_entries", "stream=width,height,nb_frames,duration,r_frame_rate",
             "-of", "json", str(path),
         ],
@@ -380,9 +417,12 @@ def _output_is_complete(out_path: Path) -> bool:
     """True if ``out_path`` looks like a finished MP4 (safe to skip on resume)."""
     if not out_path.is_file() or out_path.stat().st_size < 512:
         return False
+    ffprobe = _ffprobe_bin()
+    if not ffprobe:
+        return _output_is_complete_pyav(out_path)
     out = subprocess.run(
         [
-            "ffprobe",
+            ffprobe,
             "-v",
             "error",
             "-select_streams",
@@ -421,7 +461,7 @@ def _write_mp4(frames_thwc: np.ndarray, out_path: Path, fps: int) -> None:
     tlen, h, w, c = frames_thwc.shape
     assert c == 3
 
-    ffmpeg_bin = shutil.which("ffmpeg")
+    ffmpeg_bin = _ffmpeg_bin()
     if ffmpeg_bin:
         cmd = [
             ffmpeg_bin,

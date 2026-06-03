@@ -14,3 +14,11 @@ export PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:T
 if [[ -n "${CUDA_HOME:-}" && ! -x "${CUDA_HOME}/bin/nvcc" ]]; then
   unset CUDA_HOME
 fi
+
+_BEAKER_SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+bash "${_BEAKER_SCRIPT_DIR}/install_ffmpeg.sh"
+if ! command -v ffprobe >/dev/null 2>&1 || ! command -v ffmpeg >/dev/null 2>&1; then
+  echo "[alltracker-beaker] ERROR: ffmpeg/ffprobe not on PATH after install_ffmpeg.sh" >&2
+  exit 1
+fi
+echo "[alltracker-beaker] ffmpeg=$(command -v ffmpeg) ffprobe=$(command -v ffprobe)"

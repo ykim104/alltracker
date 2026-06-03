@@ -159,7 +159,7 @@ GANTRY_ARGS=(
   --python-manager uv
   --uv-torch-backend cu128
   --default-python-version 3.12
-  --install " (command -v apt-get >/dev/null && apt-get update -qq && apt-get install -y -qq ffmpeg python3.12-dev build-essential libgl1) || true; unset CUDA_HOME; uv pip install -r requirements.txt --torch-backend cu128"
+  --install "bash scripts/beaker/install_ffmpeg.sh; unset CUDA_HOME; (command -v apt-get >/dev/null && apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq python3.12-dev build-essential libgl1) || true; uv pip install -r requirements.txt --torch-backend cu128"
   --name "${JOB_NAME}"
   --description "AllTracker inference ${DATASET_ROOT} (${USER_NAME}) ${NUM_REPLICAS}x${NUM_GPUS}gpu mode=${INFERENCE_MODE}"
 )
@@ -170,7 +170,7 @@ if [[ "${NUM_REPLICAS}" -gt 1 ]]; then
 fi
 
 cd "${REPO_ROOT}"
-chmod +x scripts/beaker/run_inference.sh scripts/beaker/setup_job_env.sh
+chmod +x scripts/beaker/run_inference.sh scripts/beaker/setup_job_env.sh scripts/beaker/install_ffmpeg.sh
 
 if ! GANTRY_CMD="$(resolve_gantry "${REPO_ROOT}")"; then
   echo "Error: gantry not found. Install: pip install beaker-gantry && gantry config" >&2
