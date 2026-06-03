@@ -85,6 +85,15 @@ if [[ -z "${DATASET_ROOT}" ]]; then
   DATASET_ROOT="/weka/${WEKA_MOUNT}/${USER_NAME}/data/robotwin2.0/robotwin2.0"
 fi
 
+case "${INFERENCE_MODE}" in
+  multi-replica|multi-gpu) ;;
+  *)
+    echo "Error: invalid --mode '${INFERENCE_MODE}' (use multi-replica or multi-gpu)." >&2
+    echo "  Did you forget a space? e.g. --mode multi-gpu --replicas 1" >&2
+    exit 1
+    ;;
+esac
+
 if [[ "${INFERENCE_MODE}" == "multi-replica" ]]; then
   if [[ "${NUM_REPLICAS}" -le 1 ]]; then
     echo "Error: multi-replica mode needs --nodes (or --replicas) > 1" >&2
@@ -120,7 +129,7 @@ resolve_gantry() {
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 ALLTRACKER_EXTRA="${EXTRA_ARGS[*]:-}"
 
-JOB_NAME="alltracker-infer-$(basename "${DATASET_ROOT}")-${NUM_REPLICAS}x${NUM_GPUS}gpu"
+JOB_NAME="alltracker-infer-$(basename "${DATASET_ROOT}")-${NUM_REPLICAS}nodes-${NUM_GPUS}gpu"
 
 GANTRY_ARGS=(
   run
@@ -150,7 +159,7 @@ GANTRY_ARGS=(
   --python-manager uv
   --uv-torch-backend cu128
   --default-python-version 3.12
-  --install " (command -v apt-get >/dev/null && apt-get update -qq && apt-get install -y -qq ffmpeg python3.12-dev build-essential) || true; unset CUDA_HOME; uv pip install -r requirements.txt --torch-backend cu128"
+  --install " (command -v apt-get >/dev/null && apt-get update -qq && apt-get install -y -qq ffmpeg python3.12-dev build-essential libgl1) || true; unset CUDA_HOME; uv pip install -r requirements.txt --torch-backend cu128"
   --name "${JOB_NAME}"
   --description "AllTracker inference ${DATASET_ROOT} (${USER_NAME}) ${NUM_REPLICAS}x${NUM_GPUS}gpu mode=${INFERENCE_MODE}"
 )
@@ -169,7 +178,7 @@ if ! GANTRY_CMD="$(resolve_gantry "${REPO_ROOT}")"; then
 fi
 
 echo "[launch] dataset=${DATASET_ROOT}"
-echo "[launch] replicas=${NUM_REPLICAS} gpus=${NUM_GPUS} mode=${INFERENCE_MODE}"
+echo "[launch] ${NUM_REPLICAS} node(s) × ${NUM_GPUS} GPU(s)/node (mode=${INFERENCE_MODE})"
 echo "[launch] image_size=${IMAGE_SIZE} batch=${BATCH_SIZE} max_batch_frames=${MAX_BATCH_FRAMES}"
 echo ">>> ${GANTRY_CMD} ${GANTRY_ARGS[*]} -- bash scripts/beaker/run_inference.sh"
 # shellcheck disable=SC2086

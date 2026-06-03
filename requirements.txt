@@ -2,7 +2,7 @@ torch
 torchaudio
 torchvision
 pytorch_lightning==2.4.0
-opencv-python==4.10.0.84
+opencv-python-headless==4.10.0.84
 einops==0.8.0
 moviepy==1.0.3
 h5py==3.12.1
