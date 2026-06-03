@@ -161,7 +161,7 @@ GANTRY_ARGS=(
   --default-python-version 3.12
   --install "bash scripts/beaker/install_ffmpeg.sh; unset CUDA_HOME; (command -v apt-get >/dev/null && apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq python3.12-dev build-essential libgl1) || true; uv pip install -r requirements.txt --torch-backend cu128"
   --name "${JOB_NAME}"
-  --description "AllTracker inference ${DATASET_ROOT} (${USER_NAME}) ${NUM_REPLICAS}x${NUM_GPUS}gpu mode=${INFERENCE_MODE}"
+  --description "AllTracker dataset inference"
 )
 
 GANTRY_ARGS+=(--propagate-preemption)
