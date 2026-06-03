@@ -502,6 +502,8 @@ def _write_mp4_ffmpeg(frames_thwc: np.ndarray, tmp_path: Path, fps: int) -> str 
         "yuv420p",
         "-crf",
         "20",
+        "-f",
+        "mp4",
         str(tmp_path),
     ]
     proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stderr=subprocess.PIPE)
@@ -535,7 +537,10 @@ def _write_mp4_ffmpeg(frames_thwc: np.ndarray, tmp_path: Path, fps: int) -> str 
 def _write_mp4(frames_thwc: np.ndarray, out_path: Path, fps: int) -> None:
     """Write MP4 atomically (``.tmp`` then rename) for safe preemptible resume."""
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    tmp_path = out_path.with_name(out_path.name + ".tmp")
+    # Keep an ``.mp4`` extension on the temp file so ffmpeg/OpenCV can infer the
+    # container format (a bare ``.tmp`` suffix makes them fail with "Unable to find
+    # a suitable output format"). Still atomic via os.replace on success.
+    tmp_path = out_path.with_name(out_path.name + ".tmp.mp4")
     if tmp_path.exists():
         tmp_path.unlink()
     tlen, h, w, c = frames_thwc.shape
