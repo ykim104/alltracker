@@ -452,63 +452,8 @@ def _output_is_complete(out_path: Path) -> bool:
         return False
 
 
-def _write_mp4(frames_thwc: np.ndarray, out_path: Path, fps: int) -> None:
-    """Write MP4 atomically (``.tmp`` then rename) for safe preemptible resume."""
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    tmp_path = out_path.with_name(out_path.name + ".tmp")
-    if tmp_path.exists():
-        tmp_path.unlink()
+def _write_mp4_opencv(frames_thwc: np.ndarray, tmp_path: Path, fps: int) -> None:
     tlen, h, w, c = frames_thwc.shape
-    assert c == 3
-
-    ffmpeg_bin = _ffmpeg_bin()
-    if ffmpeg_bin:
-        cmd = [
-            ffmpeg_bin,
-            "-y",
-            "-hide_banner",
-            "-loglevel",
-            "error",
-            "-f",
-            "rawvideo",
-            "-vcodec",
-            "rawvideo",
-            "-s",
-            "%dx%d" % (w, h),
-            "-pix_fmt",
-            "rgb24",
-            "-r",
-            str(fps),
-            "-i",
-            "-",
-            "-an",
-            "-c:v",
-            "libx264",
-            "-pix_fmt",
-            "yuv420p",
-            "-crf",
-            "20",
-            str(tmp_path),
-        ]
-        proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stderr=subprocess.PIPE)
-        assert proc.stdin is not None
-        try:
-            for ti in range(tlen):
-                proc.stdin.write(frames_thwc[ti].astype(np.uint8, copy=False).tobytes())
-        finally:
-            proc.stdin.close()
-        err = proc.stderr.read() if proc.stderr else b""
-        proc.wait()
-        if proc.returncode == 0:
-            os.replace(tmp_path, out_path)
-            return
-        if tmp_path.exists():
-            tmp_path.unlink()
-        print(
-            "  ffmpeg H.264 encode failed (exit %s), falling back to OpenCV: %s"
-            % (proc.returncode, err.decode("utf-8", errors="replace")[:300])
-        )
-
     fourcc = cv2.VideoWriter_fourcc(*"mp4v")
     writer = cv2.VideoWriter(str(tmp_path), fourcc, float(fps), (w, h))
     if not writer.isOpened():
@@ -517,6 +462,94 @@ def _write_mp4(frames_thwc: np.ndarray, out_path: Path, fps: int) -> None:
         bgr = cv2.cvtColor(frames_thwc[ti], cv2.COLOR_RGB2BGR)
         writer.write(bgr)
     writer.release()
+
+
+def _write_mp4_ffmpeg(frames_thwc: np.ndarray, tmp_path: Path, fps: int) -> str | None:
+    """Encode via ffmpeg; return error text on failure, None on success."""
+    ffmpeg_bin = _ffmpeg_bin()
+    if not ffmpeg_bin:
+        return "ffmpeg not on PATH"
+    tlen, h, w, c = frames_thwc.shape
+    # libx264 + yuv420p requires even width/height.
+    enc = frames_thwc
+    if w % 2 or h % 2:
+        w2, h2 = w + (w % 2), h + (h % 2)
+        enc = np.zeros((tlen, h2, w2, c), dtype=np.uint8)
+        enc[:, :h, :w, :] = frames_thwc.astype(np.uint8, copy=False)
+        h, w = h2, w2
+    cmd = [
+        ffmpeg_bin,
+        "-y",
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-f",
+        "rawvideo",
+        "-vcodec",
+        "rawvideo",
+        "-s",
+        "%dx%d" % (w, h),
+        "-pix_fmt",
+        "rgb24",
+        "-r",
+        str(fps),
+        "-i",
+        "-",
+        "-an",
+        "-c:v",
+        "libx264",
+        "-pix_fmt",
+        "yuv420p",
+        "-crf",
+        "20",
+        str(tmp_path),
+    ]
+    proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stderr=subprocess.PIPE)
+    assert proc.stdin is not None
+    err = b""
+    try:
+        for ti in range(tlen):
+            proc.stdin.write(enc[ti].astype(np.uint8, copy=False).tobytes())
+    except BrokenPipeError:
+        err = proc.stderr.read() if proc.stderr else b""
+        proc.wait()
+        msg = err.decode("utf-8", errors="replace").strip() or "ffmpeg closed stdin (broken pipe)"
+        if tmp_path.exists():
+            tmp_path.unlink()
+        return msg
+    finally:
+        try:
+            proc.stdin.close()
+        except Exception:
+            pass
+    err = proc.stderr.read() if proc.stderr else b""
+    proc.wait()
+    if proc.returncode == 0 and tmp_path.is_file() and tmp_path.stat().st_size > 512:
+        return None
+    if tmp_path.exists():
+        tmp_path.unlink()
+    msg = err.decode("utf-8", errors="replace").strip() or ("ffmpeg exit %s" % proc.returncode)
+    return msg
+
+
+def _write_mp4(frames_thwc: np.ndarray, out_path: Path, fps: int) -> None:
+    """Write MP4 atomically (``.tmp`` then rename) for safe preemptible resume."""
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = out_path.with_name(out_path.name + ".tmp")
+    if tmp_path.exists():
+        tmp_path.unlink()
+    tlen, h, w, c = frames_thwc.shape
+    assert c == 3
+    fps = max(1, int(fps))
+
+    ff_err = _write_mp4_ffmpeg(frames_thwc, tmp_path, fps)
+    if ff_err is None:
+        os.replace(tmp_path, out_path)
+        return
+    print("  ffmpeg encode failed for %s, falling back to OpenCV: %s" % (out_path, ff_err[:500]))
+    sys.stdout.flush()
+
+    _write_mp4_opencv(frames_thwc, tmp_path, fps)
     os.replace(tmp_path, out_path)
 
 
@@ -794,12 +827,20 @@ def run(args: argparse.Namespace) -> None:
 
     def reap(block: bool = False) -> None:
         while pending and (block or pending[0][0].done()):
-            fut, dst = pending.popleft()
-            fut.result()
-            print("  wrote", dst)
+            fut, src, dst = pending.popleft()
+            try:
+                fut.result()
+            except Exception as e:
+                raise RuntimeError("encode failed for %s -> %s: %s" % (src, dst, e)) from e
+            print("  saved: %s  (from %s)" % (dst, src))
+            sys.stdout.flush()
 
     def run_batch(items: list[tuple[Path, Path, torch.Tensor, int]]) -> None:
         nonlocal processed
+        print("  batch inputs:")
+        for src, dst, _, fps in items:
+            print("    %s -> %s  (fps=%d)" % (src, dst, fps))
+        sys.stdout.flush()
         batch, lengths = _collate_batch(items)
         frames_list = _infer_point_frames_rgb_batched(
             batch,
@@ -814,9 +855,15 @@ def run(args: argparse.Namespace) -> None:
             bkg_opacity=bkg,
         )
         for (src, dst, _, fps), frames in zip(items, frames_list):
-            pending.append((encode_ex.submit(_write_mp4, frames, dst, int(fps)), dst))
+            n_frames = int(frames.shape[0])
+            print("  queue encode: %s -> %s  (%d frames)" % (src, dst, n_frames))
+            pending.append(
+                (encode_ex.submit(_write_mp4, frames, dst, int(fps)), src, dst)
+            )
+        sys.stdout.flush()
         processed += len(items)
-        print("[%d/%d] processed (batch of %d)" % (processed, total, len(items)))
+        print("[%d/%d] inferred (batch of %d), waiting on encode..." % (processed, total, len(items)))
+        sys.stdout.flush()
         reap(block=False)
 
     stream = _decode_pairs(
